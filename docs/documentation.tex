@@ -1,0 +1,702 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=25mm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern,microtype}
+\usepackage{amsmath,booktabs,longtable,array,enumitem,xcolor,listings}
+\usepackage{xurl,hyperref}
+\hypersetup{colorlinks=true,linkcolor=blue!55!black,urlcolor=blue!55!black,citecolor=blue!55!black}
+\lstset{basicstyle=\ttfamily\footnotesize,breaklines=true,columns=fullflexible,
+  keepspaces=true,showstringspaces=false,frame=single,aboveskip=8pt,belowskip=8pt}
+\setlist{nosep,leftmargin=*}
+\setcounter{tocdepth}{1}
+\setlength{\emergencystretch}{3em}
+\newcommand{\code}[1]{\nolinkurl{#1}}
+\title{\textbf{COBRAS User Guide}\\\large Installation, data preparation, simulation and analysis}
+\author{Liam Dauchat}
+\date{\today}
+\begin{document}
+\maketitle
+\begin{abstract}
+COBRAS is a Python framework for radial power-grid market and state analysis.
+This guide explains how to prepare a case, run the built-in methods, inspect
+their results, save a time-series study, and add a method. It documents the
+software's actual input conventions and limitations, including distinctions
+between physical units, per-unit values and squared quantities. This guide is
+the practical companion to two papers: a methodology paper detailling the mathematical derivations, 
+and a SoftwareX paper describing the research motivation and software architecture.
+\end{abstract}
+\tableofcontents
+\newpage
+
+\section{Choose a workflow}
+\label{sec:workflow}
+COBRAS operates on one connected radial network with a designated root bus.
+The built-in methods are a second-order cone programming (SOCP) relaxation of
+AC optimal power flow, a merit-order dispatch estimator, backward--forward
+sweep (BFSA) physical-state estimation, and BFSA-based distribution locational
+marginal price (DLMP) estimation.
+
+The code is distributed under the BSD 3-Clause License; see \code{LICENSE}
+and \code{COPYRIGHT} in the repository. Record the Git revision alongside
+this guide when reproducing a study.
+
+\begin{figure}[htbp]
+\centering
+\begin{tabular}{c}
+\fbox{Case folder: grid, generators, demand and availability profiles}\\[4pt]
+$\downarrow$\\[4pt]
+\fbox{Shared loading, unit conversion, validation and radial orientation}\\[4pt]
+$\downarrow$\\[4pt]
+\fbox{SOCP reference}\quad or/and\quad
+\fbox{Dispatch $\rightarrow$ BFSA $\rightarrow$ DLMP}\\[4pt]
+$\downarrow$\\[4pt]
+\fbox{Result objects $\rightarrow$ SQLite $\rightarrow$ plots and comparisons}
+\end{tabular}
+\caption{The main COBRAS workflow. A time-series study repeats the method
+stage for each snapshot. The estimator's physical state can also seed SOCP.}
+\end{figure}
+
+\begin{longtable}{p{.22\linewidth}p{.70\linewidth}}
+\toprule Task & Starting point \\\midrule\endhead
+First calculation & Run the estimator CLI in Section~\ref{sec:install}. No external optimization solver is needed.\\
+Interactive study & Open the solver GUI, select a case folder and choose OPF, estimators or comparison (Section~\ref{sec:gui}).\\
+Repeated snapshots & Use \code{MultiTimestepSolver} to write a SQLite database (Section~\ref{sec:range}).\\
+Explore saved results & Open the plot GUI or call the database plotting functions (Section~\ref{sec:plots}).\\
+Implement a new method & Use the data classes, protocols and registry (Section~\ref{sec:extend}).\\
+Understand the mathematics & See the IJEPES manuscript~\cite{ijepes}; see SoftwareX~\cite{softwarex} for motivation and design.\\
+\bottomrule
+\end{longtable}
+
+The time-series runner solves independent snapshots. It does not introduce
+intertemporal constraints, storage scheduling, unit commitment or ramp limits.
+BFSA estimates a state for a dispatch; it does not enforce the network
+constraints that define the OPF feasible set. A converged BFSA calculation is
+therefore not a certificate of a feasible or optimal dispatch.
+
+\section{Installation and first run}
+\label{sec:install}
+\subsection{Python environment}
+Use Python 3.10 or later. The supplied Conda environment selects Python below
+3.13; it is the recommended starting point when reproducing the repository's
+research workflows. Clone the repository and create the environment:
+\begin{lstlisting}
+git clone https://github.com/dauchat-ntnu/COBRAS.git
+cd COBRAS
+conda env create -f environment.yml
+conda activate cobras
+\end{lstlisting}
+COBRAS is distributed as a GitHub repository, not as a pip-installable library.
+Clone the repository first and run the example scripts from its root. On Linux, the graphical interfaces may
+also require the operating system's Tk package. The dependencies declared in
+\code{environment.yml} include NumPy, pandas, NetworkX, PyYAML, tqdm, Pyomo,
+openpyxl, matplotlib, Plotly and pandapower. Tkinter is used for the GUIs.
+The scripts import the source files directly from the clone.
+
+\subsection{Optimization solver}
+The estimator pipeline needs no external optimization solver. SOCP runs use
+Pyomo's solver interface and default to MOSEK. The Conda environment includes
+the MOSEK interface; configure a valid license separately.
+Installing the Python interface does not provide a license.
+An alternative backend must support this Pyomo kernel conic model and the
+dual values required by your analysis. A solver name accepted by Pyomo is not
+by itself evidence that it supports this model. Check a small known case
+before starting a long study. IPOPT is listed in the Conda environment, but
+the public conic workflow should not be assumed portable to every backend.
+
+\subsection{Run the supplied case}
+\begin{lstlisting}
+python examples/run_framework.py --preset estimators --load-index 0
+\end{lstlisting}
+The default case is \code{data/Methodology Paper/80_bus_base}. The summary
+should report 80 buses, 79 branches, 2 generators, 32 load records, 80 voltage
+entries and 80 active-price entries. The CLI defaults to absolute load units
+(MW/MVAr), selects row zero and prints a summary; it does not create a database.
+Use an explicit case path when comparing with an archived study:
+\begin{lstlisting}
+python examples/run_framework.py --preset comparison --case-folder "data/Methodology Paper/80_bus_base" --load-mode absolute --load-index 0 --opf-solver mosek
+python examples/run_framework.py --help
+\end{lstlisting}
+Repository data and paper outputs are retained under \code{data/Methodology Paper}.
+The existing databases there are archived results, not the output of the above
+CLI command. Save new work to a separate output path.
+
+\subsection{Check the installation}
+\begin{lstlisting}
+python -m pytest -q -ra
+\end{lstlisting}
+Read the skipped-test reasons as well as the pass count. Some tests exercise
+model construction without a commercial solver; the legacy full-solver tests
+are skipped. Passing this command alone does not establish that your MOSEK
+license works, that a GUI has been exercised on your OS, or that every input
+case is numerically valid. Run the estimator example and a licensed small
+SOCP case as separate installation checks.
+
+\section{Prepare a case folder}
+\label{sec:data}
+\subsection{Files and identifiers}
+The loader accepts MATPOWER-style CSV tables, together with CSV load profiles
+and an Excel or CSV generator table. It does not expose a direct MATPOWER
+\code{.m} file loader. Comma and semicolon separators are detected for the
+main case tables. Use explicit headers and a dot as the decimal separator.
+
+\begin{longtable}{p{.27\linewidth}p{.65\linewidth}}
+\toprule File & Contents \\\midrule\endhead
+\code{mpc_base_mva} & Positive finite base power in MVA. Plain text containing one number is sufficient. The loader also tries \code{mpc_base_mva.csv}; a named \code{base_mva} or \code{Base MVA} column is supported.\\
+\code{mpc_bus.csv} & Bus identifiers, types, voltage bounds and optional reference loads.\\
+\code{mpc_branch.csv} & Branch endpoints, per-unit resistance/reactance and ratings.\\
+\code{p_load.csv}, \code{q_load.csv} & Wide load tables. First column contains snapshot labels; remaining columns identify buses.\\
+\code{generators.xlsx} & Generator limits, linear price coefficients and optional profile names. A CSV alternative is selected with \code{generators_filename}.\\
+\code{profiles.csv} (optional) & Generator availability factors; first column contains labels, other columns are profile names.\\
+Bus mapping (optional) & Maps named load columns to numeric bus IDs. Select the file through \code{bus_mapping_filename} or the GUI.\\
+\bottomrule
+\end{longtable}
+
+Provide the base-power and generator files explicitly in publication studies.
+For legacy compatibility, a missing base file prints a warning and falls back
+to 100 MVA; a missing generator file synthesizes a default generator. These
+fallbacks are conveniences, not substitutes for a complete case description.
+Branch and generator IDs are assigned from zero-based table row positions;
+bus IDs come from the bus table. Reordering rows therefore changes branch or
+generator IDs. All bus, branch and generator IDs must be unique. Branch
+endpoints and generator/load bus references must exist in the bus table.
+
+\subsection{Bus table}
+\begin{longtable}{p{.27\linewidth}p{.65\linewidth}}
+\toprule Column & Meaning and convention \\\midrule\endhead
+\code{bus} or \code{bus_i} & Integer bus ID.\\
+\code{type} or \code{bus_type} & 1 for load, 2 for generator, 3 for root/slack. The first type-3 bus is chosen as root; otherwise the first generator's bus is used. Specify one type-3 bus.\\
+\code{Pd}, \code{Qd} & MW/MVAr reference maxima used in normalized load mode; default zero. They are not added to the time-series loads.\\
+\code{Vmin}, \code{Vmax} & Voltage \emph{magnitudes} in p.u.; defaults 0.9 and 1.1. The loader squares them for the model.\\
+\code{baseKV} or \code{base_kV} & Base voltage in kV; used in visualization.\\
+\code{Vm}, \code{Va} & Input voltage magnitude/angle metadata. The built-in SOCP root is fixed to squared voltage 1.0.\\
+Other MATPOWER fields & Area, zone and shunt fields are retained as metadata. Their presence in a table does not imply that each is modeled by the built-in branch-flow formulation.\\
+\bottomrule
+\end{longtable}
+When constructing \code{BusData} directly in Python, pass \emph{squared}
+bounds to \code{v_min} and \code{v_max}; for example \code{v_min=0.9**2}.
+The loader's \code{override_voltage_bounds=True} option takes magnitudes in
+\code{default_vmin}/\code{default_vmax} and squares them consistently.
+
+\subsection{Branch table}
+Required fields are \code{fbus}, \code{tbus}, \code{r} and \code{x}.
+Aliases \code{f_bus}, \code{t_bus}, \code{br_r} and \code{br_x} are supported.
+Resistance and reactance must already be in p.u. on the case base: the loader
+does not convert ohms. \code{status=1} means active; inactive branches do not
+belong to the oriented tree or SOCP equations. Active parallel branches,
+cycles and disconnected networks are rejected.
+
+\code{rateA} (alias \code{rate_A}) is read as MVA. The loader sets
+\(\ell_{\max}=(\mathrm{rateA}/S_{\mathrm{base}})^2\).
+The built-in model enforces this \emph{squared-current} limit. Its separate
+apparent-power-limit block is disabled; these are not equivalent limits at
+voltages away from 1 p.u. Supply ratings deliberately. A missing rating uses
+the legacy value 9999; a zero rating results in a zero current limit, not an
+unlimited branch. Tap ratio, phase shift and shunt fields are retained but
+are not implemented as transformer or shunt equations by this SOCP model.
+
+The orientation step mutates a case so each active branch points away from
+the root. \code{original_from_bus} and \code{original_to_bus} retain the input
+endpoints. Result flow keys follow the oriented direction. A negative flow
+therefore denotes power flowing toward the root.
+
+\subsection{Load profiles and units}
+\label{sec:units}
+\begin{lstlisting}
+Date,2,3
+t0,2.0,1.0
+t1,3.0,1.5
+\end{lstlisting}
+The active and reactive files must have the same normalized bus columns and
+the same ordered snapshot labels. Use finite numeric values; missing or
+invalid demands must be filled explicitly. Duplicate columns such as
+\code{30}, \code{30.1} and \code{30.2} are summed into bus 30. Avoid dots in
+named load columns because the suffix is stripped. Multiple loads mapped to
+one bus are aggregated by the methods. Negative demands represent injections.
+
+\begin{longtable}{p{.20\linewidth}p{.72\linewidth}}
+\toprule Mode & Conversion to solver-facing \code{LoadData} \\\midrule\endhead
+\code{absolute} & Entries are MW/MVAr; divide by \code{base_mva}. For a 10 MVA base, a 2 MW demand becomes 0.2 p.u.\\
+\code{normalized} & Multiply the entry by bus \code{Pd}/\code{Qd}, then divide by the base power. A factor 0.5 with a 4 MW reference on a 10 MVA base becomes 0.2 p.u.\\
+\code{auto} & Legacy inference from nonzero bus \code{Pd}/\code{Qd}. If normalized mode is not selected, the entries are passed through as p.u., without division by base power.\\
+\bottomrule
+\end{longtable}
+The Python loader defaults to \code{auto}, whereas the introductory CLI uses
+\code{absolute}. Always state the load mode in a reproducible study. In
+particular, the legacy auto fallback must not be confused with explicit
+absolute mode. Auto can infer a different interpretation for different
+snapshots; prefer an explicit mode for time-series studies.
+
+Use \code{load_index=0} for the first data row; negative indices are rejected.
+Use \code{load_at="t0"} to select a label, which takes precedence if both
+selectors are supplied. The range runner uses zero-based row indices and
+includes both endpoints. It does not infer an hourly or subhourly duration
+from labels.
+
+\subsection{Generators and availability}
+Use lowercase headers \code{bus,pmin,pmax,qmin,qmax,status,cp,cq,inflow_profile}.
+Unlike absolute load entries, generator limits are read directly as p.u.;
+convert MW/MVAr to p.u. before writing the generator file. Defaults are
+\code{pmin=0}, \code{pmax=1}, \code{qmin=-1}, \code{qmax=1},
+\code{status=1}, \code{cp=1}, \code{cq=0}. The input loader does not currently
+read a constant-cost coefficient; \code{c_0} is not part of the built-in SOCP
+objective. Voltage-control fields in a spreadsheet are not generator voltage
+constraints in the present model.
+
+\code{inflow_profile} selects a column of \code{profiles.csv}. A factor scales
+\code{p_max_available}, \code{q_max_available} and \code{q_min_available};
+the static nameplate fields remain available for reporting. Factors must be
+finite and non-negative. Values above one are allowed for capacity-scaling
+studies, so the user is responsible for choosing a meaningful profile.
+The SOCP active minimum remains the static \code{p_min}; choose compatible
+minimums when reducing available capacity. Missing profiles fall back to
+static limits, with a warning for an unknown named column.
+
+Generator profiles must have the same number of rows as the load files.
+For index selection they are aligned by \emph{row position}, even if their
+calendar labels differ; some archived cases use this convention. For label
+selection the requested label must exist in every relevant file. Document
+any deliberate alignment between different calendars.
+
+\section{Use the Python API}
+\label{sec:api}
+\subsection{A small example without input files}
+\begin{lstlisting}[language=Python]
+from libs.shared import (BusData, BranchData, GeneratorData,
+                         LoadData, PowerFlowCase)
+from libs.methods import EstimatorPipelineSolver
+
+case = PowerFlowCase(
+    buses=[BusData(1, bus_type=3, v_min=.9**2, v_max=1.1**2),
+           BusData(2, v_min=.9**2, v_max=1.1**2)],
+    branches=[BranchData(0, 1, 2, r=.01, x=.02, rateA=10)],
+    generators=[GeneratorData(0, 1, p_max=2, q_max=2,
+                              c_p=20, c_q=2)],
+    loads=[LoadData(2, p_d=.2, q_d=.05)],
+    root_bus=1, base_mva=10,
+)
+solver = EstimatorPipelineSolver(
+    physical_options={"tol": 1e-6, "max_iterations": 100})
+result = solver.solve(case)
+assert result.convergence_info["converged"]
+print(result.voltages[2] ** .5)  # voltage magnitude
+print(result.flows[(1, 2)])     # P and Q in p.u.
+print(result.duals_p)           # estimated active DLMPs
+\end{lstlisting}
+\code{EstimatorPipelineSolver.solve} returns the legacy \code{OPFResult}
+used by persistence and plotting. It runs dispatch, physical and economic
+stages through a shared execution function and includes all three stages in
+its wall time. The public BFSA physical and DLMP classes expose their stages
+separately. The combined \code{BFSASolver.solve} remains a compatibility API.
+
+\subsection{Load files and run individual methods}
+\begin{lstlisting}[language=Python]
+from pathlib import Path
+from libs.shared import load_case_from_folder, orient_radial_network
+from libs.methods import build_method
+
+case = orient_radial_network(load_case_from_folder(
+    Path("data/Methodology Paper/80_bus_base"),
+    load_index=0, load_interpretation_mode="absolute"))
+dispatch = build_method("dispatch", "dummy_merit_order").estimate(case)
+physical = build_method("physical", "bfsa").estimate(case, dispatch=dispatch)
+economic = build_method("economic", "bfsa_dlmp").estimate(
+    case, physical, dispatch=dispatch)
+
+# Requires an installed and licensed solver:
+opf = build_method("opf", "socp", {"solver_name": "mosek"})
+reference = opf.solve_optimization(case, warm_start=physical)
+\end{lstlisting}
+\code{solve_optimization} returns \code{OptimizationResult};
+\code{SOCPSolver.solve} returns \code{OPFResult}. Warm starts supply initial
+values, not constraints and not a guarantee of reduced solution time.
+The backend decides whether it can use those values.
+
+\subsection{Options and their effects}
+\begin{longtable}{p{.38\linewidth}p{.54\linewidth}}
+\toprule Option & Meaning \\\midrule\endhead
+\code{solver_name}, \code{solver_options} & Pyomo backend and its backend-specific options.\\
+\code{allow_load_shedding} & Adds separate active/reactive nodal curtailment variables to SOCP. Defaults to false. Penalties are configurable on \code{SOCPSolver}.\\
+\code{tol=0.001} & BFSA relative convergence tolerance on successive squared voltages and/or squared currents.\\
+\code{max_iterations=100} & BFSA iteration cap. Inspect the returned convergence flag.\\
+\code{convergence_check="both"} & May be \code{voltage}, \code{current} or \code{both}.\\
+\code{compute_losses=True} & Iterates electrical losses. False selects a single approximate pass.\\
+\code{v_root_sq=1.0} & BFSA root squared voltage. Keep it consistent with SOCP when comparing methods.\\
+\code{merit_order_mode="mcp"} & Use explicit active/reactive price seeds. Supply both \code{mcp_active_price} and \code{mcp_reactive_price}; this changes the price seed, not the merit-order dispatch.\\
+Plot flags & \code{show_net_bus_plot} and \code{show_merit_order_plot} display BFSA diagnostic figures.\\
+\bottomrule
+\end{longtable}
+Defaults are maintained in \code{config/default.yaml}, read once per process.
+Restart Python after editing that file. Compatibility fields named
+\code{loss_feedback_*} do not enable redispatch: the current physical estimator
+reports losses without changing the clearing generator. Do not use them as
+controls for an iterative market-clearing algorithm.
+
+\section{Graphical runner}
+\label{sec:gui}
+Start the GUI with \code{python examples/run_framework.py}. Its data directory
+defaults to \code{data/Methodology Paper}. To use another collection of case
+folders, set the \code{COBRAS_DATA_DIR} environment variable before launching:
+\begin{lstlisting}
+# PowerShell
+$env:COBRAS_DATA_DIR = "C:/my-cases"
+python examples/run_framework.py
+\end{lstlisting}
+The directory should contain one subfolder per network. The input-file
+selectors let you choose a bus table, branch table, demand files, generator
+file, base-power file and optional bus mapping. Select the load interpretation
+explicitly, then choose a snapshot or an inclusive range.
+
+Choose OPF, estimator pipeline or comparison. Configure the backend and
+shedding options for OPF; configure tolerance, iteration limit and price mode
+for the estimator. Set the output directory before starting a calculation.
+Run launches a Python subprocess and records a log under \code{log/}; inspect
+the log for solver progress or errors. The GUI remains responsive, and Kill
+requests termination of the launched process. Results from an interrupted
+run may be incomplete; verify the database timestep coverage before plotting.
+The process launch no longer depends on a PowerShell executable. Native
+GUI behavior must still be tested on each supported operating system.
+
+The GUI exposes the built-in method combinations. Registry extension alone
+does not automatically generate every method-specific option control; new
+methods may need GUI wiring in addition to registration.
+
+\section{Time-series studies and persistence}
+\label{sec:range}
+\subsection{Run a range}
+\begin{lstlisting}[language=Python]
+from pathlib import Path
+from libs.methods import EstimatorPipelineSolver
+from libs.shared.multi_timestep_solver import MultiTimestepSolver
+
+runner = MultiTimestepSolver(
+    input_folder=Path("data/Methodology Paper/80_bus_base"),
+    output_db=Path("results/tutorial/study.db"),
+    case_config={"load_interpretation_mode": "absolute"},
+    solvers={"bfsa": EstimatorPipelineSolver()},
+)
+summary = runner.run_range(0, 2, verbose=False)
+print(summary["timesteps_completed"])  # 3, endpoints included
+print(summary["db_path"])
+\end{lstlisting}
+\textbf{Choose a new output database name for each study.}
+\code{TimestepDatabase.create_tables} overwrites an existing database and its
+matching dual workbook. The runner does not resume a previous run.
+
+\code{case_config} accepts the loader filename keys, for example
+\code{generators_filename}, \code{profiles_filename},
+\code{mpc_base_mva_filename}, \code{p_load_filename} and
+\code{q_load_filename}, as well as load interpretation and voltage overrides.
+Static tables and time-series frames are cached. Each returned case owns its
+bus and branch records so changing one snapshot does not change another.
+
+To compare methods, add \code{"socp": build_method("opf", "socp")} to
+\code{solvers}. Use \code{warm_start_mode="Estimator t"} for a same-snapshot
+estimator seed, or \code{"ACOPF t-1"} for a previous successful OPF result.
+\code{warm_start_solver_name} selects the estimator explicitly when needed.
+An estimator used both for comparison and a warm start runs only once per
+snapshot. After a skipped infeasible step, the previous-result seed is the
+last successful result, which need not be from the immediately preceding row.
+
+With \code{continue_on_socp_infeasible=True} and shedding disabled, recognized
+SOCP infeasibility is recorded and processing continues. Other failures stop
+the run. \code{timesteps_completed} counts processed row indices, including
+rows containing a solver failure; it is not a count of feasible OPF results.
+
+\subsection{Database contents and units}
+\begin{longtable}{p{.32\linewidth}p{.60\linewidth}}
+\toprule Table & Purpose \\\midrule\endhead
+\code{Grid_Buses}, \code{Grid_Branches}, \code{Grid_Generators} & Static network and generator records.\\
+\code{Grid_Metadata} & Base power and root bus.\\
+\code{Res_Timesteps} & Solver, index, scenario label, cost, timing, convergence status and selected run settings.\\
+\code{Res_Buses} & Squared voltage, active/reactive demands and active/reactive prices.\\
+\code{Res_Branches} & Oriented active/reactive power flows and squared current \code{ell}.\\
+\code{Res_Generators} & Active/reactive dispatch and available active capacity.\\
+\code{Res_SOCPDuals} & Named constraint duals where available.\\
+\code{Res_SolverTimingSummary} & Aggregate wall, build, optimization and extraction timings.\\
+\code{Agg_BusMetrics}, \code{Agg_BranchMetrics} & Range aggregates.\\
+\bottomrule
+\end{longtable}
+Bus voltage is stored as \(V^2\), not \(V\); current is stored as \(I^2\),
+not \(I\). Power flows, demands and dispatch remain p.u. Multiply power by
+\code{base_mva} for MW/MVAr. A result's \code{voltages}, \code{flows},
+\code{generator_output}, \code{duals_p}/\code{duals_q} and
+\code{branch_currents} use those same conventions.
+
+\code{Res_Buses.load_shed} stores active curtailment when supplied by the
+solver, and \code{Res_Branches.flow_loss} stores active losses from BFSA
+diagnostics or resistance times \code{ell}. Archived databases produced before
+this review contain zero placeholders in these fields; they must not be used
+to infer an absence of shedding or losses. Reactive curtailment and SOCP total
+curtailment remain in the in-memory convergence diagnostics. BFSA line losses
+are also available in \code{line_state_bfsa}.
+
+Dual workbooks are exported on closing a write session and large sheets are
+split at Excel's row limit. CSV export is available through
+\code{runner.export_results_to_csv} or \code{TimestepDatabase.export_to_csv}.
+The database is the primary artifact; preserve the source input folder,
+configuration, software revision and solver versions beside it. Not every
+method option or original timestamp is stored in the schema.
+
+\subsection{Read a stored metric}
+\begin{lstlisting}[language=Python]
+from libs.shared.timestep_database import TimestepDatabase
+db = TimestepDatabase("results/tutorial/study.db")
+rows = db.get_bus_timeseries(2, 0, 2, "bfsa", "voltage")
+print([(t, v_sq ** .5) for t, v_sq in rows])
+\end{lstlisting}
+Range-result retrieval combines statistics over a horizon; it is not itself
+a physically solved snapshot. The runner retains result objects in memory
+as well as writing SQLite. For very long horizons, run manageable batches
+with distinct output files and account for this memory use.
+
+\section{Interpret results and compare methods}
+\label{sec:results}
+\subsection{Validity before accuracy}
+Check convergence and solver termination, finite voltages, expected bus and
+branch counts, and the input units. Inspect voltage and current constraints
+and the conic gap
+\[
+  v_i\ell_{ij}-p_{ij}^2-q_{ij}^2.
+\]
+A small non-negative gap supports tightness of the relaxation at that branch;
+convergence alone does not establish SOCP exactness. The BFSA implementation
+clips very low squared voltages internally. Severe undervoltage and divergent
+cases need independent feasibility checks; do not accept a plotted state
+solely because it has finite values.
+
+BFSA holds the root voltage fixed and does not redispatch generation to cover
+network losses. Its reported generator outputs can therefore differ from the
+root injection implied by the electrical solution. Positive minimum generator
+outputs and reactive absorption are not enforced by the simple merit order.
+When supply is insufficient, it includes a synthetic zero-cost load-excess
+offer; this is not an economically meaningful scarcity-price model.
+
+\subsection{Costs, prices and timing}
+The SOCP model minimizes linear generation cost plus any shedding penalties.
+Reported cost is the p.u. objective multiplied by base power. If coefficients
+are in currency/MWh and the snapshot is interpreted as one hour, the value
+is a one-hour cost; for other durations apply the duration explicitly.
+The runner sums snapshot values without multiplying by hours.
+
+The dummy dispatch instead reports clearing price times total demand,
+separately for active and reactive power. This is a settlement-style value,
+not the SOCP production-cost objective. An automatic difference between these
+fields is not an optimality gap. Compute a common cost functional on both
+dispatches when making that comparison.
+
+Missing or rejected SOCP balance duals are represented as NaN rather than
+zero. Their absence is not evidence of a zero marginal price. The BFSA prices
+are estimates based on its seed and analytical propagation assumptions.
+They are not congestion duals of a constrained dispatch optimization.
+
+For runtime comparisons distinguish the external solver's solve time from
+total Python wall time. SOCP records build, optimize, extract and total times;
+the estimator adapter records all three stages. Include warm-up policy,
+hardware, backend threads, horizon, repetitions and loading costs when
+reporting speedups. The speed-analysis script excludes file loading from its
+per-solve wall-time measurement.
+
+\subsection{Comparison APIs}
+\code{comparison/state_comparison.py} compares \code{DispatchResult},
+\code{PhysicalStateResult}, \code{EconomicStateResult} and
+\code{OptimizationResult}. \code{comparison/benchmark.py} supports legacy
+\code{OPFResult} pairs, sweeps and publication tables. These two APIs serve
+different callers; select one deliberately.
+The framework signed percentage is
+\(100(x_{\mathrm{candidate}}-x_{\mathrm{reference}})/|x_{\mathrm{reference}}|\).
+Maps are compared on common keys; missing keys are not automatically a failed
+test. At a zero reference, a nonzero candidate yields an infinite percentage
+which is omitted by finite-value summary statistics. Read the count together
+with the error. Legacy benchmark and plot paths have different zero-reference
+and small-flow handling, so do not assume their aggregates are interchangeable.
+
+\section{Plotting and downstream studies}
+\label{sec:plots}
+\subsection{Database plot GUI}
+\begin{lstlisting}
+python examples/generate_plots.py
+\end{lstlisting}
+Choose a database, an output folder, solver names, metric, entity IDs and an
+inclusive index range. IDs may be comma-separated or ranges, such as
+\code{2,5,8-12}. Use the IDs in the saved database. Network and merit plots
+may need the matching original case folder in addition to the database.
+
+\begin{longtable}{p{.24\linewidth}p{.68\linewidth}}
+\toprule Plot type & Use \\\midrule\endhead
+Bus, branch & Time series of prices, squared voltages, demands or oriented branch flows.\\
+Generator & Active dispatch in p.u. or MW, with availability context.\\
+Box & Distributions grouped by bus or branch and method.\\
+Duration & Descending sorted values or errors; the horizontal position is rank/exceedance, not chronological time.\\
+Solve time & Solver timing by snapshot, including BFSA iteration counts where available.\\
+Dashboard & Bus and branch metrics on a shared time axis.\\
+Network & Bus colors for price or voltage and branch colors for flow/loading; single, difference or side-by-side views.\\
+Merit & Active or reactive offers and clearing point.\\
+Comparison table & Detailed or aggregate differences and timing as CSV.\\
+LMP statistics & Per-bus distribution summaries as CSV.\\
+P--Q case counts & Classification counts exported to Excel.\\
+\bottomrule
+\end{longtable}
+Several difference modes use the literal solver names \code{bfsa} and
+\code{socp}; preserve those keys when using the built-in comparison GUI.
+Percent differences are signed BFSA minus SOCP relative to the absolute SOCP
+reference. Raw differences retain the metric's units. The option to exclude
+invalid SOCP snapshots also masks the corresponding BFSA observations;
+report how many observations remain. An empty plot may reflect filtering,
+an absent metric, a solver-name mismatch or a range without successful results.
+HTML plots are interactive; the Plotly toolbar can export a high-resolution
+PNG. Network plotting uses pandapower to build a plotting representation,
+not to validate COBRAS's numerical solution.
+
+\subsection{Plot from Python}
+\begin{lstlisting}[language=Python]
+from pathlib import Path
+from libs.visualization import create_bus_timeseries_plot
+fig, saved_path = create_bus_timeseries_plot(
+    "results/tutorial/study.db", bus_ids=[2, 3],
+    solver_names=["bfsa"], metric="lmp_p",
+    output_dir=Path("results/tutorial"), file_stem="prices")
+print(saved_path)
+\end{lstlisting}
+\subsection{Other entry points}
+\begin{longtable}{p{.40\linewidth}p{.52\linewidth}}
+\toprule Script & Role and preparation \\\midrule\endhead
+\code{examples/analyze_load_profiles.py} & Raw load summaries, boxplots and optional time series. Run \code{--help} for range/export options. Raw profiles retain their input units or factors.\\
+\code{examples/run_speed_analysis.py} & Repeated BFSA/SOCP timing. Use \code{--bfsa-only} when no optimization backend is available.\\
+\code{examples/run_sensitivity.py} & Generator reactive/active cost-ratio sweep. The reusable \code{run_cq_cp_sweep} accepts a network folder, generator ID, ratios, snapshot labels, file configuration and solvers. The script's research-specific main block needs configuration.\\
+\code{examples/plot_sensitivity_lmp.py} & Reads a sensitivity run and produces LMP-error boxplots; supply the matching run directory and labels.\\
+\code{libs/methods/economic/full_KKT} & Python API for the explicit radial KKT system; exposes its matrix, labels, solution and price diagnostics.\\
+\bottomrule
+\end{longtable}
+\begin{lstlisting}
+python examples/run_speed_analysis.py --bfsa-only --runs 3 --start-index 0 --end-index 2 --output-dir results/tutorial/speed
+\end{lstlisting}
+The speed script currently calls the loader in legacy \code{auto} mode.
+Match that convention before comparing its numerical outputs to a study run
+in explicit absolute mode. Its timing results alone do not establish that
+two studies used the same physical demands.
+The full-KKT implementation is under \code{libs/methods/economic/full_KKT}.
+It is a diagnostic workflow, not a registered replacement for BFSA-DLMP.
+Inspect its rank, solution mode and stationarity residual. A least-squares
+solution of a rank-deficient system is not proof of unique economic prices.
+The matrix is dense, so this workflow has different memory and scaling
+properties from the radial sweep. The scenario-creation script removed from
+this checkout is not part of the supported workflow described here.
+
+\section{Extend COBRAS}
+\label{sec:extend}
+\subsection{Architecture and contracts}
+\begin{longtable}{p{.39\linewidth}p{.53\linewidth}}
+\toprule Location & Responsibility \\\midrule\endhead
+\code{libs/shared/data.py}, \code{network.py}, \code{io.py} & Case records, validation, radial topology and input conversion.\\
+\code{libs/shared/results.py}, \code{interfaces.py} & Result containers, compatibility adapters and method protocols.\\
+\code{libs/methods/base.py}, \code{registry.py}, \code{defaults.py} & Method metadata, lookup/building and YAML defaults.\\
+\code{libs/methods/execution.py}, \code{pipeline.py} & Shared dispatch--physical--economic execution and the legacy solver adapter.\\
+\code{libs/methods/opf/socp} & Model construction, cached parameter updates, backend solve and dual extraction.\\
+\code{libs/methods/physical/bfsa} & Electrical sweeps and shared analytical price-propagation primitives.\\
+\code{libs/methods/dispatch}, \code{economic} & Dispatch and economic estimators, including the separate KKT diagnostic.\\
+\code{libs/shared/gui_runner.py}, \code{gui_method_config.py} & Interactive configuration and serialized job execution.\\
+\code{libs/shared/multi_timestep_solver.py}, \code{timestep_database.py} & Horizon orchestration and persistence.\\
+\code{libs/visualization}, \code{libs/analysis}, \code{comparison} & Plotting, load-profile analysis and comparisons.\\
+\code{examples}, \code{tests}, \code{config} & Entry points, regression tests and method defaults.\\
+\bottomrule
+\end{longtable}
+Use the family that matches your method: \code{dispatch}, \code{physical},
+\code{economic} or \code{opf}. Implement the corresponding protocol in
+\code{libs/shared/interfaces.py} and return the matching result container.
+Do not reimplement input parsing, topology orientation, SQLite writing or
+comparison statistics within a method.
+
+\subsection{Register a method}
+This skeleton shows the registration mechanics; replace the estimator with
+a scientifically meaningful implementation before using it in a study.
+\begin{lstlisting}[language=Python]
+from libs.methods.base import MethodSpec
+from libs.methods.registry import METHOD_REGISTRY, build_method
+from libs.shared import EconomicStateResult, MethodCapabilities
+
+class ConstantPrice:
+    name = "constant_price"
+    capabilities = MethodCapabilities(
+        produces_physical_state=False, produces_economic_state=True,
+        produces_dispatch=False, supports_warm_start=False,
+        requires_physical_state=True)
+    def __init__(self, price=20.0):
+        self.price = price
+    def estimate(self, case, physical_state, *, dispatch=None,
+                 previous_economic_state=None):
+        return EconomicStateResult(
+            lambda_p={b.bus_id: self.price for b in case.buses},
+            lambda_q={b.bus_id: 0.0 for b in case.buses},
+            method_name=self.name)
+
+METHOD_REGISTRY["economic"]["constant_price"] = MethodSpec(
+    family="economic", key="constant_price", label="Constant price",
+    builder=ConstantPrice, capabilities=ConstantPrice.capabilities,
+    default_options={"price": 20.0})
+method = build_method("economic", "constant_price", {"price": 25.0})
+\end{lstlisting}
+In-memory registration is local to that Python process. For a persistent
+extension, place the implementation in a method-family package and import
+its specification from the registry. Add defaults to the YAML file when
+appropriate. Explicit build options override the registered defaults.
+\code{option_schema} describes controls; it is not a general runtime validator.
+Validate your method's options yourself.
+
+The built-in BFSA physical estimator expects merit-order metadata
+\code{p_clearing}/\code{q_clearing} in its \code{DispatchResult}; a generic
+dispatch containing only setpoints does not satisfy that additional contract.
+BFSA-DLMP similarly requires BFSA line-state diagnostics in the physical
+result. Protocol compatibility alone therefore does not make arbitrary
+method combinations valid. The range/database stack expects an object with
+\code{solve(case)} returning \code{OPFResult}; adapt a new OPF's framework
+result with \code{opf_result_from_optimization} when necessary.
+
+Before registering a production method, test a tiny known case, missing or
+invalid inputs, nonconvergence, output units and IDs, and a two-snapshot run.
+Compare against an independent reference where possible. Preserve existing
+public adapters until their consumers have been migrated.
+
+\section{Troubleshooting and reproducibility}
+\begin{longtable}{p{.32\linewidth}p{.60\linewidth}}
+\toprule Symptom & Checks \\\midrule\endhead
+Import error & Activate the Conda environment and run from the GitHub clone's root. PyYAML provides the \code{yaml} import.\\
+No GUI networks & Check \code{COBRAS_DATA_DIR} and its immediate child case folders.\\
+Solver unavailable/license error & Verify the backend installation and license in the same environment as Python. Try the estimator-only workflow first.\\
+Unexpectedly large/small loads & Compare \code{absolute}, \code{normalized} and legacy \code{auto}; inspect generator limits, base power and one converted snapshot.\\
+Invalid topology & Check active status, missing buses, duplicate/parallel branches, cycles and disconnected islands.\\
+Snapshot selection error & Indices are zero-based, range ends are inclusive, labels must be unique for label selection.\\
+Missing prices or empty plots & Inspect solver status, missing duals, solver names, selected metrics, index range and masking.\\
+Different numerical results & Match input files, base power, mode, snapshot, tolerance, solver version, thread count, price seeds and software revision.\\
+Unexpected cost gap & BFSA settlement and SOCP production-cost objectives are different quantities.\\
+Slow long run & Check repeated case parsing in custom scripts, dense KKT work, plot/export time and retained result memory. Reuse the cached range loader and solver instance.\\
+\bottomrule
+\end{longtable}
+For a published study retain the Git revision, environment/package versions,
+solver version and settings, input files or checksums, selected rows and their
+duration, load mode, generator-profile alignment, method settings, convergence
+criteria and output database. Separate numerical accuracy from feasibility,
+and report excluded observations together with summary errors.
+
+\section{Build and maintain this guide}
+This file is self-contained: no untracked figure directory or external
+bibliography is needed. With a LaTeX installation, from \code{docs} run:
+\begin{lstlisting}
+pdflatex -interaction=nonstopmode -halt-on-error documentation.tex
+pdflatex -interaction=nonstopmode -halt-on-error documentation.tex
+\end{lstlisting}
+The second pass resolves the table of contents and cross-references. Check the
+log for missing references and overfull boxes, then inspect the PDF. 
+
+{\small
+\begin{thebibliography}{9}
+\bibitem{ijepes} L. Dauchat, S. F. Myhre and M. Korp\aa s.
+\emph{Price-Preserving Aggregation Framework and Methods for Radial Distribution Grids}.
+Original methodology paper submitted to IJEPES.
+\bibitem{softwarex} L. Dauchat, S. F. Myhre and M. Korp\aa s.
+\emph{COBRAS: A python toolkit for Convex Optimal-power-flow Based Radial-grid
+Analysis, Approximations, and Simulation}.
+Original software paper submitted to SoftwareX.
+\end{thebibliography}
+}
+\end{document}

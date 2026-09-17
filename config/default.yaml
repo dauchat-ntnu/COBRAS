@@ -1,0 +1,78 @@
+methods:
+  opf:
+    socp:
+      default_options:
+        solver_name: mosek
+        verbose: false
+        allow_load_shedding: false
+      option_schema:
+        solver_name:
+          type: str
+          default: mosek
+        verbose:
+          type: bool
+          default: false
+        allow_load_shedding:
+          type: bool
+          default: false
+
+  dispatch:
+    dummy_merit_order:
+      default_options:
+        merit_order_mode: dummy
+        mcp_active_price:
+        mcp_reactive_price:
+      option_schema:
+        merit_order_mode:
+          type: choice
+          choices: [dummy, mcp]
+          default: dummy
+        mcp_active_price:
+          type: float
+          default:
+        mcp_reactive_price:
+          type: float
+          default:
+
+  physical:
+    bfsa:
+      default_options:
+        compute_losses: true
+        tol: 0.001
+        max_iterations: 100
+        convergence_check: both
+        v_root_sq: 1.0
+        loss_feedback_tol: 0.05
+        loss_feedback_max_iterations: 1
+        merit_order_mode: dummy
+        mcp_active_price:
+        mcp_reactive_price:
+      option_schema:
+        tol:
+          type: float
+          default: 0.001
+        max_iterations:
+          type: int
+          default: 100
+        convergence_check:
+          type: choice
+          choices: [voltage, current, both]
+          default: both
+
+  economic:
+    bfsa_dlmp:
+      default_options:
+        merit_order_mode: dummy
+        mcp_active_price:
+        mcp_reactive_price:
+      option_schema:
+        merit_order_mode:
+          type: choice
+          choices: [dummy, mcp]
+          default: dummy
+        mcp_active_price:
+          type: float
+          default:
+        mcp_reactive_price:
+          type: float
+          default:
